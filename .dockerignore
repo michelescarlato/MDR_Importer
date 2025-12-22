@@ -1,0 +1,7 @@
+﻿.git
+**/bin
+**/obj
+**/.vs
+**/.idea
+MDR_Sources
+*.md

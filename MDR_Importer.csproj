@@ -41,4 +41,8 @@
     <EmbeddedResource Remove="TestHelpers\**" />
   </ItemGroup>
 
+  <ItemGroup>
+    <Content Include=".github\workflows\docker-build-push.yaml" />
+  </ItemGroup>
+
 </Project>
