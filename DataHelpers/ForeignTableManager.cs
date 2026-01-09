@@ -8,6 +8,12 @@ public class ForeignTableManager
     private readonly string _db_conn;
     private readonly ILoggingHelper _logging_helper;
 
+    public ForeignTableManager(Source source, ILoggingHelper logging_helper)
+    {
+        _db_conn = source.db_conn ?? "";
+        _logging_helper = logging_helper;
+    }
+    
     public void EstablishForeignMonTables(ICredentials creds)
     {
         if (string.IsNullOrWhiteSpace(creds.Username) || string.IsNullOrWhiteSpace(creds.Password))
