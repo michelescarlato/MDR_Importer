@@ -1,14 +1,19 @@
-﻿namespace MDR_Importer;
+﻿using Microsoft.Extensions.Configuration;
+
+namespace MDR_Importer;
 
 public class Importer
 {
     private readonly ILoggingHelper _loggingHelper;
     private readonly IMonDataLayer _monDataLayer;
+    private readonly IConfiguration _config;
 
-    public Importer(IMonDataLayer monDataLayer, ILoggingHelper loggingHelper)
+
+    public Importer(IMonDataLayer monDataLayer, ILoggingHelper loggingHelper, IConfiguration config)
     {
         _monDataLayer = monDataLayer;
         _loggingHelper = loggingHelper;
+        _config = config;
     }
 
     public void Run(Options opts)
@@ -59,7 +64,7 @@ public class Importer
         // that orchestrates the transfer, then create import event log record.
 
         _loggingHelper.LogHeader("Start Import Process");
-        ForeignTableManager ftm = new ForeignTableManager(source, _loggingHelper);
+        ForeignTableManager ftm = new ForeignTableManager(source, _loggingHelper, _config);
         ftm.EstablishForeignMonTables(_monDataLayer.Credentials);
         DataTransferManager dtm = new DataTransferManager(source, opts.RebuildAdTables, _loggingHelper);
         int importId = _monDataLayer.GetNextImportEventId();

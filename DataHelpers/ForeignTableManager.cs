@@ -1,4 +1,5 @@
-﻿using Dapper;
+﻿using Microsoft.Extensions.Configuration;
+using Dapper;
 using Npgsql;
 
 namespace MDR_Importer;
@@ -7,11 +8,14 @@ public class ForeignTableManager
 {
     private readonly string _db_conn;
     private readonly ILoggingHelper _logging_helper;
+    private readonly IConfiguration _config;
 
-    public ForeignTableManager(Source source, ILoggingHelper logging_helper)
+
+    public ForeignTableManager(Source source, ILoggingHelper logging_helper,  IConfiguration config)
     {
         _db_conn = source.db_conn ?? "";
         _logging_helper = logging_helper;
+        _config = config;
     }
     
     public void EstablishForeignMonTables(ICredentials creds)
@@ -19,58 +23,75 @@ public class ForeignTableManager
         if (string.IsNullOrWhiteSpace(creds.Username) || string.IsNullOrWhiteSpace(creds.Password))
             return;
 
-        using var conn = new NpgsqlConnection(_db_conn);
+        // Read from appsettings.json (top-level keys)
+        // Fallbacks are optional but handy.
+        var fdwHost = _config["host"];
+        var fdwPort = _config.GetValue<int?>("port");
 
+        if (string.IsNullOrWhiteSpace(fdwHost))
+            throw new InvalidOperationException("Missing 'host' in appsettings.json");
+        if (fdwPort is null)
+            throw new InvalidOperationException("Missing 'port' in appsettings.json");
+        
+        using var conn = new NpgsqlConnection(_db_conn);
         conn.Open();
+
         _logging_helper.LogLine($"Connected to: {conn.Database} @ {conn.Host}:{conn.Port} as {conn.UserName}");
 
         conn.Execute(@"CREATE SCHEMA IF NOT EXISTS sd;");
         conn.Execute(@"CREATE EXTENSION IF NOT EXISTS postgres_fdw WITH SCHEMA sd;");
 
-        // Create if missing
+        // Build SQL literals once (FDW OPTIONS require string literals, not parameters)
+        var hostLit = SqlLiteral(fdwHost);
+        var portLit = SqlLiteral(fdwPort.Value.ToString());
+        
         conn.Execute(@"
-        CREATE SERVER IF NOT EXISTS mon
-        FOREIGN DATA WRAPPER postgres_fdw
-        OPTIONS (host '172.22.173.218', dbname 'mon', port '5432');
-    ");
+            CREATE SERVER IF NOT EXISTS mon
+            FOREIGN DATA WRAPPER postgres_fdw
+            OPTIONS (host {hostLit}, dbname 'mon', port {portLit});
+        ");
 
-        // Always enforce options (fixes the localhost issue forever)
-        conn.Execute(@"
-        ALTER SERVER mon OPTIONS (
-          SET host '172.22.173.218',
-          SET dbname 'mon',
-          SET port '5432'
-        );
-    ");
+        // Option B: always enforce correct host/port (as string literals!)
+        conn.Execute($@"
+            ALTER SERVER mon OPTIONS (
+              SET host {hostLit},
+              SET dbname 'mon',
+              SET port {portLit}
+            );
+        ");
 
-        // FDW OPTIONS require string literals -> can't use parameters here
+        // FDW mapping: also must be string literals (not Dapper params)
         var uLit = SqlLiteral(creds.Username);
         var pLit = SqlLiteral(creds.Password);
 
         conn.Execute($@"
-        CREATE USER MAPPING IF NOT EXISTS FOR CURRENT_USER
-        SERVER mon
-        OPTIONS (user {uLit}, password {pLit});
-    ");
+            CREATE USER MAPPING IF NOT EXISTS FOR CURRENT_USER
+            SERVER mon
+            OPTIONS (user {uLit}, password {pLit});
+        ");
 
         conn.Execute($@"
-        ALTER USER MAPPING FOR CURRENT_USER
-        SERVER mon
-        OPTIONS (SET user {uLit}, SET password {pLit});
-    ");
+            ALTER USER MAPPING FOR CURRENT_USER
+            SERVER mon
+            OPTIONS (SET user {uLit}, SET password {pLit});
+        ");
 
         conn.Execute(@"
-        DROP SCHEMA IF EXISTS mon_sf CASCADE;
-        CREATE SCHEMA mon_sf;
-        IMPORT FOREIGN SCHEMA sf
-        FROM SERVER mon
-        INTO mon_sf;
+            DROP SCHEMA IF EXISTS mon_sf CASCADE;
+            CREATE SCHEMA mon_sf;
+            IMPORT FOREIGN SCHEMA sf
+            FROM SERVER mon
+            INTO mon_sf;
+        ");
+        
+        // Optional: log the stored FDW server options to confirm it’s using your config
+        var opts = conn.ExecuteScalar<string>(@"
+        SELECT array_to_string(srvoptions, ',')
+        FROM pg_foreign_server
+        WHERE srvname = 'mon';
     ");
-
-        _logging_helper.LogLine("Foreign (mon) tables established in database");
-        _logging_helper.LogLine("");
+        _logging_helper.LogLine($"FDW server 'mon' options now: {opts}");
     }
-
 
 
     public void DropForeignMonTables()

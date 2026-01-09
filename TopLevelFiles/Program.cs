@@ -69,7 +69,7 @@ if (paramsCheck.ParseError || paramsCheck.ValidityError)
 try
 {
     var opts = paramsCheck.Pars!;
-    Importer importer = new(monDataLayer, loggingHelper);
+    Importer importer = new(monDataLayer, loggingHelper, configFiles);
     importer.Run(opts);
     return 0;
 }
