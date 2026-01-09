@@ -16,41 +16,69 @@ public class ForeignTableManager
 
     public void EstablishForeignMonTables(ICredentials creds)
     {
-        if (creds.Username is not null && creds.Password is not null)
-        {
-            using var conn = new NpgsqlConnection(_db_conn);
-            
-            // Explicit open so we can log accurate connection info (and fail early if needed)
-            conn.Open();
-            _logging_helper.LogLine(
-                $"Connected to: {conn.Database} @ {conn.Host}:{conn.Port} as {conn.UserName}"
+        if (string.IsNullOrWhiteSpace(creds.Username) || string.IsNullOrWhiteSpace(creds.Password))
+            return;
+
+        using var conn = new NpgsqlConnection(_db_conn);
+
+        // Explicit open so we can log accurate connection info (and fail early if needed)
+        conn.Open();
+        _logging_helper.LogLine($"Connected to: {conn.Database} @ {conn.Host}:{conn.Port} as {conn.UserName}");
+
+        // 1) Ensure extension exists in schema sd (canonical syntax is WITH SCHEMA)
+        //    (Optional but safer: ensure schema exists first)
+        conn.Execute(@"CREATE SCHEMA IF NOT EXISTS sd;");
+        conn.Execute(@"CREATE EXTENSION IF NOT EXISTS postgres_fdw WITH SCHEMA sd;");
+
+        // 2) Create server if missing, then ALWAYS enforce correct options
+        conn.Execute(@"
+            CREATE SERVER IF NOT EXISTS mon
+            FOREIGN DATA WRAPPER postgres_fdw
+            OPTIONS (host '172.22.173.218', dbname 'mon', port '5432');
+        ");
+
+        conn.Execute(@"
+            ALTER SERVER mon OPTIONS (
+              SET host '172.22.173.218',
+              SET dbname 'mon',
+              SET port '5432'
             );
-            
-            string sql_string = @"CREATE EXTENSION IF NOT EXISTS postgres_fdw
-                                 schema sd;";
-            conn.Execute(sql_string);
+        ");
 
-            sql_string = @"CREATE SERVER IF NOT EXISTS mon "
-                         + @" FOREIGN DATA WRAPPER postgres_fdw
-                        OPTIONS (host '172.22.173.218', dbname 'mon', port '5432');";
-            conn.Execute(sql_string);
+        // 3) Create mapping if missing, then ALWAYS enforce current credentials
+        conn.Execute(@"
+            CREATE USER MAPPING IF NOT EXISTS FOR CURRENT_USER
+            SERVER mon
+            OPTIONS (user @u, password @p);
+        ", new { u = creds.Username, p = creds.Password });
 
-            sql_string = @"CREATE USER MAPPING IF NOT EXISTS FOR CURRENT_USER
-                 SERVER mon 
-                 OPTIONS (user '" + creds.Username + "', password '" + creds.Password + "');";
-            conn.Execute(sql_string);
+        conn.Execute(@"
+            ALTER USER MAPPING FOR CURRENT_USER
+            SERVER mon
+            OPTIONS (SET user @u, SET password @p);
+        ", new { u = creds.Username, p = creds.Password });
 
-            sql_string = @"DROP SCHEMA IF EXISTS mon_sf cascade;
-                 CREATE SCHEMA mon_sf; 
-                 IMPORT FOREIGN SCHEMA sf
-                 FROM SERVER mon 
-                 INTO mon_sf;";
-            conn.Execute(sql_string);
-            
-            _logging_helper.LogLine("Foreign (mon) tables established in database");
-            _logging_helper.LogLine("");
-        }
+        // (Optional but very useful) Log what Postgres has stored for the FDW server options
+        var opts = conn.QuerySingleOrDefault<string>(@"
+            SELECT array_to_string(srvoptions, ',')
+            FROM pg_foreign_server
+            WHERE srvname = 'mon';
+        ");
+        _logging_helper.LogLine($"FDW server 'mon' options now: {opts ?? "<not found>"}");
+
+        // 4) Recreate local schema and import foreign schema
+        conn.Execute(@"
+            DROP SCHEMA IF EXISTS mon_sf CASCADE;
+            CREATE SCHEMA mon_sf;
+            IMPORT FOREIGN SCHEMA sf
+            FROM SERVER mon
+            INTO mon_sf;
+        ");
+
+        _logging_helper.LogLine("Foreign (mon) tables established in database");
+        _logging_helper.LogLine("");
     }
+
 
 
     public void DropForeignMonTables()
