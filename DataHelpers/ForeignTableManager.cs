@@ -8,12 +8,6 @@ public class ForeignTableManager
     private readonly string _db_conn;
     private readonly ILoggingHelper _logging_helper;
 
-    public ForeignTableManager(Source source, ILoggingHelper logging_helper)
-    {
-        _db_conn = source.db_conn ?? "";
-        _logging_helper = logging_helper;
-    }
-
     public void EstablishForeignMonTables(ICredentials creds)
     {
         if (string.IsNullOrWhiteSpace(creds.Username) || string.IsNullOrWhiteSpace(creds.Password))
@@ -21,59 +15,51 @@ public class ForeignTableManager
 
         using var conn = new NpgsqlConnection(_db_conn);
 
-        // Explicit open so we can log accurate connection info (and fail early if needed)
         conn.Open();
         _logging_helper.LogLine($"Connected to: {conn.Database} @ {conn.Host}:{conn.Port} as {conn.UserName}");
 
-        // 1) Ensure extension exists in schema sd (canonical syntax is WITH SCHEMA)
-        //    (Optional but safer: ensure schema exists first)
         conn.Execute(@"CREATE SCHEMA IF NOT EXISTS sd;");
         conn.Execute(@"CREATE EXTENSION IF NOT EXISTS postgres_fdw WITH SCHEMA sd;");
 
-        // 2) Create server if missing, then ALWAYS enforce correct options
+        // Create if missing
         conn.Execute(@"
-            CREATE SERVER IF NOT EXISTS mon
-            FOREIGN DATA WRAPPER postgres_fdw
-            OPTIONS (host '172.22.173.218', dbname 'mon', port '5432');
-        ");
+        CREATE SERVER IF NOT EXISTS mon
+        FOREIGN DATA WRAPPER postgres_fdw
+        OPTIONS (host '172.22.173.218', dbname 'mon', port '5432');
+    ");
+
+        // Always enforce options (fixes the localhost issue forever)
+        conn.Execute(@"
+        ALTER SERVER mon OPTIONS (
+          SET host '172.22.173.218',
+          SET dbname 'mon',
+          SET port '5432'
+        );
+    ");
+
+        // FDW OPTIONS require string literals -> can't use parameters here
+        var uLit = SqlLiteral(creds.Username);
+        var pLit = SqlLiteral(creds.Password);
+
+        conn.Execute($@"
+        CREATE USER MAPPING IF NOT EXISTS FOR CURRENT_USER
+        SERVER mon
+        OPTIONS (user {uLit}, password {pLit});
+    ");
+
+        conn.Execute($@"
+        ALTER USER MAPPING FOR CURRENT_USER
+        SERVER mon
+        OPTIONS (SET user {uLit}, SET password {pLit});
+    ");
 
         conn.Execute(@"
-            ALTER SERVER mon OPTIONS (
-              SET host '172.22.173.218',
-              SET dbname 'mon',
-              SET port '5432'
-            );
-        ");
-
-        // 3) Create mapping if missing, then ALWAYS enforce current credentials
-        conn.Execute(@"
-            CREATE USER MAPPING IF NOT EXISTS FOR CURRENT_USER
-            SERVER mon
-            OPTIONS (user @u, password @p);
-        ", new { u = creds.Username, p = creds.Password });
-
-        conn.Execute(@"
-            ALTER USER MAPPING FOR CURRENT_USER
-            SERVER mon
-            OPTIONS (SET user @u, SET password @p);
-        ", new { u = creds.Username, p = creds.Password });
-
-        // (Optional but very useful) Log what Postgres has stored for the FDW server options
-        var opts = conn.QuerySingleOrDefault<string>(@"
-            SELECT array_to_string(srvoptions, ',')
-            FROM pg_foreign_server
-            WHERE srvname = 'mon';
-        ");
-        _logging_helper.LogLine($"FDW server 'mon' options now: {opts ?? "<not found>"}");
-
-        // 4) Recreate local schema and import foreign schema
-        conn.Execute(@"
-            DROP SCHEMA IF EXISTS mon_sf CASCADE;
-            CREATE SCHEMA mon_sf;
-            IMPORT FOREIGN SCHEMA sf
-            FROM SERVER mon
-            INTO mon_sf;
-        ");
+        DROP SCHEMA IF EXISTS mon_sf CASCADE;
+        CREATE SCHEMA mon_sf;
+        IMPORT FOREIGN SCHEMA sf
+        FROM SERVER mon
+        INTO mon_sf;
+    ");
 
         _logging_helper.LogLine("Foreign (mon) tables established in database");
         _logging_helper.LogLine("");
@@ -163,5 +149,13 @@ public class ForeignTableManager
             _logging_helper.LogError("In update last imported date (" + tableName + "): " + res);
         }
     }
+    
+    private static string SqlLiteral(string value)
+    {
+        // PostgreSQL string literal escaping: single-quote doubled
+        // e.g. abc'def -> 'abc''def'
+        return "'" + value.Replace("'", "''") + "'";
+    }
+
 }
 
