@@ -19,6 +19,13 @@ public class ForeignTableManager
         if (creds.Username is not null && creds.Password is not null)
         {
             using var conn = new NpgsqlConnection(_db_conn);
+            
+            // Explicit open so we can log accurate connection info (and fail early if needed)
+            conn.Open();
+            _logging_helper.LogLine(
+                $"Connected to: {conn.Database} @ {conn.Host}:{conn.Port} as {conn.UserName}"
+            );
+            
             string sql_string = @"CREATE EXTENSION IF NOT EXISTS postgres_fdw
                                  schema sd;";
             conn.Execute(sql_string);
