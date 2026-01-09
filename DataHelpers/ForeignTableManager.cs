@@ -25,13 +25,12 @@ public class ForeignTableManager
 
         // Read from appsettings.json (top-level keys)
         // Fallbacks are optional but handy.
-        var fdwHost = _config["host"];
-        var fdwPort = _config.GetValue<int?>("port");
+        var fdwHost = _config["host"] ?? throw new InvalidOperationException("Missing 'host' in appsettings.json");
+        var fdwPort = _config.GetValue<int?>("port") ?? throw new InvalidOperationException("Missing 'port' in appsettings.json");
 
-        if (string.IsNullOrWhiteSpace(fdwHost))
-            throw new InvalidOperationException("Missing 'host' in appsettings.json");
-        if (fdwPort is null)
-            throw new InvalidOperationException("Missing 'port' in appsettings.json");
+        // Build SQL literals once (FDW OPTIONS require string literals, not parameters)
+        var hostLit = SqlLiteral(fdwHost);
+        var portLit = SqlLiteral(fdwPort.ToString());
         
         using var conn = new NpgsqlConnection(_db_conn);
         conn.Open();
@@ -41,11 +40,8 @@ public class ForeignTableManager
         conn.Execute(@"CREATE SCHEMA IF NOT EXISTS sd;");
         conn.Execute(@"CREATE EXTENSION IF NOT EXISTS postgres_fdw WITH SCHEMA sd;");
 
-        // Build SQL literals once (FDW OPTIONS require string literals, not parameters)
-        var hostLit = SqlLiteral(fdwHost);
-        var portLit = SqlLiteral(fdwPort.Value.ToString());
         
-        conn.Execute(@"
+        conn.Execute($@"
             CREATE SERVER IF NOT EXISTS mon
             FOREIGN DATA WRAPPER postgres_fdw
             OPTIONS (host {hostLit}, dbname 'mon', port {portLit});
@@ -76,7 +72,7 @@ public class ForeignTableManager
             OPTIONS (SET user {uLit}, SET password {pLit});
         ");
 
-        conn.Execute(@"
+        conn.Execute($@"
             DROP SCHEMA IF EXISTS mon_sf CASCADE;
             CREATE SCHEMA mon_sf;
             IMPORT FOREIGN SCHEMA sf
