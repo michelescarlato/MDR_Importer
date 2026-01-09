@@ -25,7 +25,7 @@ public class ForeignTableManager
 
             sql_string = @"CREATE SERVER IF NOT EXISTS mon "
                          + @" FOREIGN DATA WRAPPER postgres_fdw
-                        OPTIONS (host 'localhost', dbname 'mon', port '5432');";
+                        OPTIONS (host '172.22.173.218', dbname 'mon', port '5432');";
             conn.Execute(sql_string);
 
             sql_string = @"CREATE USER MAPPING IF NOT EXISTS FOR CURRENT_USER
